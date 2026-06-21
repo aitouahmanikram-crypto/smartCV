@@ -44,8 +44,8 @@ export default function CVAnalysis({ token }: { token: string }) {
             headers: { "Authorization": `Bearer ${token}` }
         });
         const data = await res.json();
-        setVersions(data);
-    } catch(err) { console.error("Failed to fetch versions:", err); }
+        setVersions(Array.isArray(data) ? data : []);
+    } catch(err) { console.error("Failed to fetch versions:", err); setVersions([]); }
   };
 
   const handleRestore = async (versionId: string) => {
