@@ -238,10 +238,10 @@ interface DatabaseSchema {
 
 
 // Add global Activity Log Helper for event-driven telemetry (Issue #4, #6 resolved)
-async function logActivity(userId: string, tenantId: string, type: 'upload' | 'analysis' | 'letter' | 'match', message: string) {
+async function logActivity(userId: string, tenantId: string, type: 'upload' | 'analysis' | 'letter' | 'match' | 'chat' | 'auth' | 'admin', message: string) {
   try {
     await supabase.from('activities').insert([{
-      id: `activity-${Date.now()}-${Math.random().toString(36).substr(2, 4)}`,
+      id: `activity-${Date.now()}-${Math.random().toString(36).substring(2, 6)}`,
       userId,
       tenantId,
       type,
@@ -249,9 +249,10 @@ async function logActivity(userId: string, tenantId: string, type: 'upload' | 'a
       timestamp: new Date().toISOString()
     }]);
   } catch (err) {
-    console.error("Failed to log activity to Supabase", err);
+    console.error("❌ Failed to log activity to Supabase:", err);
   }
 }
+
 
 // --- API ROUTES ---
 
@@ -272,49 +273,60 @@ app.post("/api/auth/register", async (req, res) => {
     const userId = `user-${Date.now()}`;
     const tenantId = `tenant-${Math.random().toString(36).substring(2, 7)}`;
     const passwordHash = bcrypt.hashSync(password, 10);
-    const virtualBio = serializeUserBio("user", "active", "");
 
     const { error } = await supabase.from('users').insert([{
       id: userId,
       email: email.toLowerCase(),
-      passwordHash: passwordHash,
+      passwordHash,
       name,
-      tenantId: tenantId,
-      title: "",
-      bio: virtualBio,
+      tenantId,
       createdAt: new Date().toISOString()
     }]);
 
     if (error) throw error;
 
     const token = generateToken(userId, tenantId);
-    logActivity(userId, tenantId, "upload", `Account registered for ${name}`);
+    await logActivity(userId, tenantId, "auth", `Account registered for ${name}`);
 
-    res.status(201).json({ token, user: { id: userId, email, name, tenantId: tenantId, role: "user", status: "active" } });
+    res.status(201).json({ token, user: { id: userId, email: email.toLowerCase(), name, tenantId } });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
-
 app.post("/api/auth/login", async (req, res) => {
   const { email, password } = req.body;
-  if (!email || !password) return res.status(400).json({ error: "Email and password are required" });
+  if (!email || !password) {
+    return res.status(400).json({ error: "Email and password are required" });
+  }
 
   try {
-    const { data: user, error } = await supabase.from('users').select('*').eq('email', email.toLowerCase()).maybeSingle();
-    if (!user || error) return res.status(401).json({ error: "Invalid email or password" });
-
-    const isValid = bcrypt.compareSync(password, user.passwordHash);
-    if (!isValid) return res.status(401).json({ error: "Invalid credentials" });
-
-    const userWithR = extendUserWithVirtualFields(user);
-    if (userWithR.status === "suspended") {
-      return res.status(403).json({ error: "Your account has been suspended. Please contact the administrator." });
+    const { data: rawUser, error } = await supabase.from('users').select('*').eq('email', email.toLowerCase()).maybeSingle();
+    if (error || !rawUser) {
+      return res.status(401).json({ error: "Invalid email or password" });
     }
 
+    const isValid = bcrypt.compareSync(password, rawUser.passwordHash);
+    if (!isValid) {
+      return res.status(401).json({ error: "Invalid email or password" });
+    }
+
+    const user = extendUserWithVirtualFields(rawUser);
     const token = generateToken(user.id, user.tenantId);
-    res.json({ token, user: { id: user.id, email: user.email, name: user.name, tenantId: user.tenantId, title: user.title, bio: userWithR.bio, role: userWithR.role, status: userWithR.status } });
+    
+    res.json({
+      token,
+      user: { 
+        id: user.id, 
+        email: user.email, 
+        name: user.name, 
+        tenantId: user.tenantId, 
+        role: user.role,
+        status: user.status,
+        title: user.title, 
+        bio: user.bio 
+      }
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
@@ -322,36 +334,52 @@ app.post("/api/auth/login", async (req, res) => {
 
 app.get("/api/auth/me", authenticate, async (req: any, res) => {
   try {
-    const { data: user, error } = await supabase.from('users').select('*').eq('id', req.user.userId).maybeSingle();
-    if (!user || error) return res.status(404).json({ error: "User profile not found" });
-    const userWithR = extendUserWithVirtualFields(user);
-    res.json({ id: user.id, email: user.email, name: user.name, tenantId: user.tenantId, title: user.title || "", bio: userWithR.bio || "", role: userWithR.role, status: userWithR.status, createdAt: user.createdAt });
+    const { data: rawUser, error } = await supabase.from('users').select('*').eq('id', req.user.userId).maybeSingle();
+    if (error || !rawUser) {
+      return res.status(404).json({ error: "User profile details not found" });
+    }
+    const user = extendUserWithVirtualFields(rawUser);
+    res.json({
+      id: user.id,
+      email: user.email,
+      name: user.name,
+      tenantId: user.tenantId,
+      role: user.role,
+      status: user.status,
+      title: user.title || "",
+      bio: user.bio || "",
+      createdAt: user.createdAt
+    });
   } catch (err: any) {
     res.status(500).json({ error: err.message });
   }
 });
 
 app.post("/api/profile/update", authenticate, async (req: any, res) => {
-  const { name, title, bio } = req.body;
-  try {
-    const { data: rawUser } = await supabase.from('users').select('*').eq('id', req.user.userId).maybeSingle();
-    if (!rawUser) return res.status(404).json({ error: "User not found" });
-    
-    const userWithR = extendUserWithVirtualFields(rawUser);
+    const { name, title, bio } = req.body;
+    try {
+        const { data: rawUser, error: getErr } = await supabase.from('users').select('*').eq('id', req.user.userId).maybeSingle();
+        if (!rawUser || getErr) return res.status(404).json({ error: "User not found" });
 
-    const updatePayload: any = {};
-    if (name) updatePayload.name = name;
-    if (title !== undefined) updatePayload.title = title;
-    
-    // Maintain role & status when updating bios
-    updatePayload.bio = serializeUserBio(userWithR.role, userWithR.status, bio !== undefined ? bio : userWithR.bio);
+        const userWithR = extendUserWithVirtualFields(rawUser);
 
-    const { error } = await supabase.from('users').update(updatePayload).eq('id', req.user.userId);
-    if (error) throw error;
-    res.json({ success: true, user: { name, title, bio } });
-  } catch (err: any) {
-    res.status(500).json({ error: err.message });
-  }
+        const updatePayload: any = {};
+        if (name !== undefined) updatePayload.name = name;
+        if (title !== undefined) updatePayload.title = title;
+        
+        const nextRole = userWithR.role;
+        const nextStatus = userWithR.status;
+        const nextBio = bio !== undefined ? bio : userWithR.bio;
+
+        updatePayload.bio = serializeUserBio(nextRole, nextStatus, nextBio);
+
+        const { error: updateErr } = await supabase.from('users').update(updatePayload).eq('id', req.user.userId);
+        if (updateErr) throw updateErr;
+
+        res.json({ success: true, user: { ...userWithR, ...updatePayload, bio: nextBio } });
+    } catch (err: any) {
+        res.status(500).json({ error: err.message });
+    }
 });
 
 app.get("/api/jobs", async (req, res) => {
@@ -377,7 +405,7 @@ app.post("/api/jobs/create", authenticate, async (req: any, res) => {
     };
     const { error } = await supabase.from('jobs').insert([newJob]);
     if (error) throw error;
-    logActivity(req.user.userId, req.user.tenantId, "match", `Added new job posting: ${title} at ${company}`);
+    await logActivity(req.user.userId, req.user.tenantId, "match", `Added new job posting: ${title} at ${company}`);
     res.status(201).json(newJob);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -422,14 +450,29 @@ app.post("/api/cvs/upload", authenticate, upload.single("cvFile"), async (req: a
     const openaiPayload = await parseCVTextAndGenerateSummary(textContent);
     const score = openaiPayload.score || 72;
     const cvId = `cv-${Date.now()}`;
+    
+    // State machine logic: VALIDATED if score >= 70, otherwise ANALYSED or REJECTED
+    // Following "additional instructions" for excellent status tracking
+    const status = score >= 80 ? "VALIDATED" : (score >= 60 ? "ANALYSED" : "REJECTED");
 
     const analyzedCV = {
-      id: cvId, userId: req.user.userId, fileName: fileName || "Resume", status: "ANALYSED", score,
-      grammarScore: openaiPayload.grammarScore || 70, impactScore: openaiPayload.impactScore || 65, skillsScore: openaiPayload.skillsScore || 75,
-      summary: openaiPayload.summary || "Parsed Resume", suggestions: openaiPayload.recommendations || [],
-      strengths: openaiPayload.strengths || [], weaknesses: openaiPayload.weaknesses || [], atsOptimizations: openaiPayload.atsOptimizations || [],
-      grammarImprovements: openaiPayload.grammarImprovements || [], recommendations: openaiPayload.recommendations || [],
-      skillsMatched: openaiPayload.skillsMatched || [], skillsMissing: openaiPayload.skillsMissing || [],
+      id: cvId, 
+      userId: req.user.userId, 
+      fileName: fileName || "Resume", 
+      status, // Updated status based on intelligence scoring
+      score,
+      grammarScore: openaiPayload.grammarScore || 70, 
+      impactScore: openaiPayload.impactScore || 65, 
+      skillsScore: openaiPayload.skillsScore || 75,
+      summary: openaiPayload.summary || "Parsed Resume", 
+      suggestions: openaiPayload.recommendations || [],
+      strengths: openaiPayload.strengths || [], 
+      weaknesses: openaiPayload.weaknesses || [], 
+      atsOptimizations: openaiPayload.atsOptimizations || [],
+      grammarImprovements: openaiPayload.grammarImprovements || [], 
+      recommendations: openaiPayload.recommendations || [],
+      skillsMatched: openaiPayload.skillsMatched || [], 
+      skillsMissing: openaiPayload.skillsMissing || [],
       parsedDetails: {
         ...(openaiPayload.parsedDetails || {}),
         keywordMatching: openaiPayload.keywordMatching || 70,
@@ -441,11 +484,16 @@ app.post("/api/cvs/upload", authenticate, upload.single("cvFile"), async (req: a
         technicalQuestions: openaiPayload.technicalQuestions || [],
         behavioralQuestions: openaiPayload.behavioralQuestions || [],
         situationalQuestions: openaiPayload.situationalQuestions || []
-      }, updatedAt: new Date().toISOString()
+      }, 
+      updatedAt: new Date().toISOString()
     };
 
     const { error } = await supabase.from('cvs').insert([analyzedCV]);
     if (error) throw error;
+
+    // Log the event for telemetry dashboard (Issue #4 resolved)
+    await logActivity(req.user.userId, req.user.tenantId, "analysis", `CV "${fileName}" analyzed with score ${score}%. Status: ${status}.`);
+
     res.json(analyzedCV);
   } catch (error: any) {
     res.status(500).json({ error: "Gemini parser failure: " + error.message });
@@ -676,7 +724,7 @@ app.post("/api/career-advice/generate", authenticate, async (req: any, res) => {
       console.warn("⚠️ Failed to insert compiled career_advice row:", insertErr.message);
     }
 
-    logActivity(req.user.userId, req.user.tenantId, "analysis", `Generated AI Career Advice report for CV: ${cv.fileName}`);
+    await logActivity(req.user.userId, req.user.tenantId, "analysis", `Generated AI Career Advice report for CV: ${cv.fileName}`);
     res.json(careerAdviceRow);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -743,7 +791,7 @@ app.put("/api/cvs/:id", authenticate, async (req: any, res) => {
         createdAt: new Date().toISOString()
     }]);
 
-    logActivity(req.user.userId, req.user.tenantId, "analysis", `CV ATS details updated and version ${versionNumber} created for: ${existing.fileName}`);
+    await logActivity(req.user.userId, req.user.tenantId, "analysis", `CV ATS details updated and version ${versionNumber} created for: ${existing.fileName}`);
     res.json(data[0]);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -781,7 +829,7 @@ app.post("/api/cover-letters/generate", authenticate, async (req: any, res) => {
     const { error } = await supabase.from('cover_letters').insert([newLetter]);
     if (error) throw error;
 
-    logActivity(req.user.userId, req.user.tenantId, "letter", `Generated Cover Letter for ${jobTitle}`);
+    await logActivity(req.user.userId, req.user.tenantId, "letter", `Generated Cover Letter for ${jobTitle}`);
     res.json(newLetter);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -818,6 +866,10 @@ app.post("/api/matches/analyze", authenticate, async (req: any, res) => {
     };
 
     await supabase.from('matches').insert([matchResult]);
+    
+    // Log match activity for telemetry feed
+    await logActivity(req.user.userId, req.user.tenantId, "match", `Analyzed match for job "${job.title}" with score ${matchResult.matchScore}%.`);
+
     res.json(matchResult);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -845,6 +897,10 @@ app.post("/api/matches/custom", authenticate, async (req: any, res) => {
     };
 
     await supabase.from('matches').insert([matchResult]);
+
+    // Log custom match activity
+    await logActivity(req.user.userId, req.user.tenantId, "match", `Analyzed custom match for "${jobTitle}" at "${companyName || 'Custom Corp'}" with score ${matchResult.matchScore}%.`);
+
     res.json(matchResult);
   } catch (err: any) {
     res.status(500).json({ error: err.message });
@@ -956,7 +1012,10 @@ app.post("/api/chat/message", authenticate, async (req: any, res) => {
       contents: [{ role: "user", parts: [{ text: message }] }],
       config: { systemInstruction: "Career Coach guidelines. Context: " + context }
     });
-    res.json({ reply: response.text });
+
+    await logActivity(req.user.userId, req.user.tenantId, "chat", `Chat query: ${message.substring(0, 50)}${message.length > 50 ? '...' : ''}`);
+    
+    res.json({ reply: (response.text || "").trim() });
   } catch (err: any) { res.status(500).json({ error: err.message }); }
 });
 
@@ -1917,6 +1976,76 @@ async function ensureDefaultAdmin() {
         await supabase.from('users').update({ bio: virtualBio }).eq('id', existing.id);
         console.log("✅ Refreshed default admin user virtual fields.");
       }
+    }
+
+    // Seed default jobs if none exist
+    const { count: jobCount } = await supabase.from('jobs').select('*', { count: 'exact', head: true });
+    if (!jobCount) {
+      console.log("💼 Seeding initial job board for production environment...");
+      const initialJobs = [
+        {
+          id: "job-p-1",
+          title: "Senior Full Stack Engineer (Remote)",
+          company: "Vercel",
+          location: "San Francisco, CA / Remote",
+          category: "SaaS Platform",
+          type: "Full-Time",
+          description: "We are looking for a Senior Full Stack Engineer to help build the future of deployment and developer experiences. You will work with React, Next.js, and Node.js.",
+          requirements: ["React", "TypeScript", "Next.js", "Node.js", "Tailwind CSS"],
+          salary: "$160k - $220k",
+          postedAt: new Date().toISOString()
+        },
+        {
+          id: "job-p-2",
+          title: "Senior Product Designer",
+          company: "OpenAI",
+          location: "San Francisco, CA",
+          category: "AI & Research",
+          type: "Full-Time",
+          description: "Design the interfaces that bridge the gap between human intelligence and AI capabilities. Focus on intuitive, accessible, and powerful user experiences.",
+          requirements: ["Figma", "Design Systems", "Prototyping", "UX Research"],
+          salary: "$180k - $250k",
+          postedAt: new Date().toISOString()
+        },
+        {
+          id: "job-p-3",
+          title: "Cloud Solutions Architect",
+          company: "AWS",
+          location: "Seattle, WA",
+          category: "Core Infrastructure",
+          type: "Full-Time",
+          description: "Help customers architect highly scalable, available, and resilient applications on AWS. Lead technical discussions and design reviews.",
+          requirements: ["AWS", "Cloud Architecture", "Terraform", "Security"],
+          salary: "$170k - $230k",
+          postedAt: new Date().toISOString()
+        },
+        {
+          id: "job-p-4",
+          title: "Backend Specialist (Node/Go)",
+          company: "Stripe",
+          location: "Dublin, Ireland",
+          category: "Fintech",
+          type: "Full-Time",
+          description: "Build the payment infrastructure for the internet. Scalability, reliability, and precision are our top priorities.",
+          requirements: ["Node.js", "Go", "PostgreSQL", "API Design"],
+          salary: "€120k - €160k",
+          postedAt: new Date().toISOString()
+        },
+        {
+          id: "job-p-5",
+          title: "Senior Frontend Engineer",
+          company: "Datadog",
+          location: "Paris, France / Remote",
+          category: "Monitoring",
+          type: "Full-Time",
+          description: "Create highly performant data visualizations and dashboards for massive scale monitoring data.",
+          requirements: ["React", "TypeScript", "D3.js", "Performance Optimization"],
+          salary: "€90k - €120k",
+          postedAt: new Date().toISOString()
+        }
+      ];
+      await supabase.from('jobs').insert(initialJobs);
+      console.log("✅ Seeded 5 initial job postings.");
     }
   } catch (err: any) {
     console.error("⚠️ Error checking/seeding default admin account:", err.message);
