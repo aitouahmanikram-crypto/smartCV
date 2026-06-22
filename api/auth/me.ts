@@ -2,7 +2,6 @@ import { getSupabase } from '../lib/db';
 import { runCors } from '../lib/cors';
 import { getAuthenticatedUser } from '../lib/middleware';
 import { extendUserWithVirtualFields } from '../lib/utils';
-import { sendSuccess, sendError } from '../lib/api-utils';
 
 export default async function handler(req: any, res: any) {
   if (!runCors(req, res)) return;
@@ -14,11 +13,11 @@ export default async function handler(req: any, res: any) {
     const supabase = getSupabase();
     const { data: fullUser, error } = await supabase.from('users').select('*').eq('id', user.id).maybeSingle();
     
-    if (error || !fullUser) return sendError(res, "User profile not found", 404);
+    if (error || !fullUser) return res.status(404).json({ error: "User profile not found" });
 
     const userWithVirtuals = extendUserWithVirtualFields(fullUser);
-    return sendSuccess(res, userWithVirtuals);
+    res.json(userWithVirtuals);
   } catch (err: any) {
-    return sendError(res, err);
+    res.status(500).json({ error: err.message });
   }
 }
