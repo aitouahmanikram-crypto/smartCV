@@ -1,7 +1,6 @@
 import { getSupabase } from '../../lib/db';
 import { runCors } from '../../lib/cors';
 import { getAuthenticatedUser } from '../../lib/middleware';
-import { sendSuccess, sendError } from '../../lib/api-utils';
 
 export default async function handler(req: any, res: any) {
   if (!runCors(req, res)) return;
@@ -19,8 +18,8 @@ export default async function handler(req: any, res: any) {
       .order('updatedAt', { ascending: false });
     
     if (error) throw error;
-    return sendSuccess(res, cvs || []);
+    res.status(200).json(cvs || []);
   } catch (err: any) {
-    return sendError(res, err);
+    res.status(500).json({ error: err.message });
   }
 }

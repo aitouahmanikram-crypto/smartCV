@@ -1,7 +1,6 @@
 import { getSupabase } from '../lib/db';
 import { runCors } from '../lib/cors';
 import { getAuthenticatedUser } from '../lib/middleware';
-import { sendSuccess, sendError } from '../lib/api-utils';
 
 export default async function handler(req: any, res: any) {
   if (!runCors(req, res)) return;
@@ -39,13 +38,13 @@ export default async function handler(req: any, res: any) {
       .from('interview_questions')
       .select('*', { count: 'exact', head: true });
 
-    return sendSuccess(res, {
+    res.status(200).json({
       cvs: cvsArr,
       coverLetters: lettersArr,
       matches: matchesArr,
       interviewQuestionsCount: interviewTableCount || 0
     });
   } catch (err: any) {
-    return sendError(res, err);
+    res.status(500).json({ error: err.message });
   }
 }

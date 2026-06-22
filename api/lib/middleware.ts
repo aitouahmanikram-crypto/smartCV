@@ -1,25 +1,24 @@
 import { verifyToken } from './auth';
 import { getSupabase } from './db';
-import { sendError } from './api-utils';
 
 // Simplified for brevity, you should implement full logic from server.ts
 export async function getAuthenticatedUser(req: any, res: any) {
   const authHeader = req.headers.authorization;
   if (!authHeader || !authHeader.startsWith("Bearer ")) {
-    sendError(res, "Missing or invalid authorization token", 401);
+    res.status(401).json({ error: "Missing or invalid authorization token" });
     return null;
   }
   const token = authHeader.split(" ")[1];
   const decoded = verifyToken(token);
   if (!decoded) {
-    sendError(res, "Session expired or invalid token", 401);
+    res.status(401).json({ error: "Session expired or invalid token" });
     return null;
   }
   
   const supabase = getSupabase();
   const { data: rawUser } = await supabase.from('users').select('*').eq('id', decoded.userId).maybeSingle();
   if (!rawUser) {
-    sendError(res, "User session is invalid", 401);
+    res.status(401).json({ error: "User session is invalid" });
     return null;
   }
   
@@ -31,7 +30,7 @@ export async function getAuthenticatedAdmin(req: any, res: any) {
   if (!user) return null;
 
   if (user.role !== 'super_admin') {
-    sendError(res, "Unauthorized. Super Admin access only.", 403);
+    res.status(403).json({ error: "Unauthorized. Super Admin access only." });
     return null;
   }
   return user;
